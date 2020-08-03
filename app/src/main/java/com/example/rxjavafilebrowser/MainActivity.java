@@ -5,8 +5,6 @@ import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Environment;
 import android.util.Log;
-import android.view.View;
-import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.ListView;
 
@@ -16,8 +14,6 @@ import androidx.appcompat.widget.Toolbar;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import com.google.android.material.floatingactionbutton.FloatingActionButton;
-import com.google.android.material.snackbar.Snackbar;
 import com.jakewharton.rxbinding4.view.RxView;
 
 import java.io.File;
@@ -26,21 +22,23 @@ import java.util.List;
 
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
 import io.reactivex.rxjava3.core.Observable;
-import io.reactivex.rxjava3.core.ObservableEmitter;
-import io.reactivex.rxjava3.core.ObservableOnSubscribe;
-import io.reactivex.rxjava3.core.ObservableSource;
-import io.reactivex.rxjava3.core.Scheduler;
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
-import io.reactivex.rxjava3.disposables.Disposable;
-import io.reactivex.rxjava3.functions.Consumer;
-import io.reactivex.rxjava3.functions.Function;
-import io.reactivex.rxjava3.schedulers.Schedulers;
-import io.reactivex.rxjava3.subjects.BehaviorSubject;
+import kotlin.Unit;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = MainActivity.class.getSimpleName();
     FileListAdapter adapter;
-    private CompositeDisposable disposable;
+    private CompositeDisposable viewSubscriptions;
+    private FIleBrowserViewModel viewModel;
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        viewSubscriptions.add(
+                viewModel.getCurrentDirFiles()
+                        .observeOn(AndroidSchedulers.mainThread())
+                        .subscribe(this::updateList));
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,9 +62,67 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onPause() {
+        super.onPause();
+        viewSubscriptions.clear();
+    }
+
+    @Override
     protected void onDestroy() {
         super.onDestroy();
-        disposable.clear();
+        viewModel.unsubscribe();
+    }
+
+
+    private void init() {
+        Toolbar toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+
+        // Setup views
+        final ListView listView = findViewById(R.id.list_view);
+        adapter = new FileListAdapter(this, android.R.layout.simple_list_item_1, new ArrayList<>());
+        listView.setAdapter(adapter);
+        final Button rootBtn = findViewById(R.id.root_btn);
+        final Button backBtn = findViewById(R.id.back_btn);
+
+        viewSubscriptions = new CompositeDisposable();
+
+        // Emits file with selected dir path
+        Observable<File> listViewObservable =
+                Observable.create(emitter ->
+                        listView.setOnItemClickListener((parent, view, position, id) -> {
+                            final File file = (File) view.getTag();
+                            Log.d(TAG, "Selected dir: " + file);
+                            if (file.isDirectory()) {
+                                emitter.onNext(file);
+                            }
+                        }));
+
+        // Emits file with root path
+        Observable<Unit> rootButtonObservable =
+                RxView.clicks(rootBtn);
+
+        // Emits file with parent path
+        Observable<Unit> backButtonObservable =
+                RxView.clicks(backBtn);
+
+        FileBrowserModel model = new FileBrowserModel(
+                this::createFilesObservable,
+                Environment.getExternalStorageDirectory().getPath(),
+                getPreferences(MODE_PRIVATE));
+
+        viewModel = new FIleBrowserViewModel(
+                listViewObservable,
+                rootButtonObservable,
+                backButtonObservable,
+                model);
+        viewModel.subscribe();
+
+    }
+
+    private void updateList(List<File> files) {
+        adapter.clear();
+        adapter.addAll(files);
     }
 
     private Observable<List<File>> createFilesObservable(final File file) {
@@ -94,63 +150,6 @@ public class MainActivity extends AppCompatActivity {
         }
 
         return fileList;
-    }
-
-    private void init() {
-        Toolbar toolbar = findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
-
-        final ListView listView = findViewById(R.id.list_view);
-        adapter = new FileListAdapter(this, android.R.layout.simple_list_item_1, new ArrayList<>());
-        listView.setAdapter(adapter);
-
-        final File root = new File(Environment.getExternalStorageDirectory().getPath());
-
-        Button rootBtn = findViewById(R.id.root_btn);
-        Button backBtn = findViewById(R.id.back_btn);
-
-        disposable = new CompositeDisposable();
-
-        BehaviorSubject<File> selectedDir = BehaviorSubject.createDefault(root);
-        disposable.add(selectedDir
-                .switchMap(
-                        file -> createFilesObservable(file)
-                                .subscribeOn(Schedulers.io())
-                )
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(this::updateList));
-
-        Observable<File> listViewObservable =
-                Observable.create(emitter ->
-                        listView.setOnItemClickListener((parent, view, position, id) -> {
-                            final File file = (File) view.getTag();
-                            Log.d(TAG, "Selected dir: " + file);
-                            if (file.isDirectory()) {
-                                emitter.onNext(file);
-                            }
-                        }));
-
-
-        Observable<File> rootButtonObservable =
-                RxView.clicks(rootBtn)
-                        .map(event -> root);
-
-        Observable<File> backButtonObservable =
-                RxView.clicks(backBtn)
-                        .map(event -> selectedDir.getValue().getParentFile());
-
-        Observable<File> changeDirObservable =
-                Observable.merge(
-                        listViewObservable,
-                        rootButtonObservable,
-                        backButtonObservable);
-        disposable.add(changeDirObservable.subscribe(selectedDir::onNext));
-
-    }
-
-    private void updateList(List<File> files) {
-        adapter.clear();
-        adapter.addAll(files);
     }
 
 }
